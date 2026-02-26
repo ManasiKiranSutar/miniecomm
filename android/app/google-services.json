@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "329887582191",
+    "project_id": "miniecomm-848f7",
+    "storage_bucket": "miniecomm-848f7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:329887582191:android:01707da7159afdbdac181a",
+        "android_client_info": {
+          "package_name": "com.example.miniecomm"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC092j2hS17Mh4EQ38dp4gBb0shw7v6tZs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

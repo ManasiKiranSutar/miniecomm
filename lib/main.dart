@@ -1,4 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'firebase_options.dart';
+import 'notification_service.dart';
+
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -7,8 +13,36 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:lottie/lottie.dart';
 
-void main() {
-  runApp(MyApp());
+@pragma('vm:entry-point')
+Future<void> _backgroundMessageHandler(RemoteMessage message) async {
+  await Firebase.initializeApp();
+  print("Background message: ${message.messageId}");
+}
+
+void main() async {
+  // This ensures Flutter is properly initialized
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Add error handling
+  runZonedGuarded(() async {
+    try {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+      
+      FirebaseMessaging.onBackgroundMessage(_backgroundMessageHandler);
+      
+      runApp(MyApp());
+    } catch (e, stack) {
+      print('Error initializing app: $e');
+      print('Stack trace: $stack');
+      // Run app even if Firebase fails
+      runApp(MyApp());
+    }
+  }, (error, stack) {
+    print('Uncaught error: $error');
+    print('Stack trace: $stack');
+  });
 }
 
 class MyApp extends StatelessWidget {
@@ -42,6 +76,16 @@ class _ProductScreenState extends State<ProductScreen> {
   @override
   void initState() {
     super.initState();
+    
+    // Initialize notification service with error handling
+    try {
+      NotificationService notificationService = NotificationService();
+      notificationService.requestNotificationPermission();
+      notificationService.getFcmToken();
+    } catch (e) {
+      print('Notification service error: $e');
+    }
+    
     checkInternetAndLoad();
     loadFavorites();
 
@@ -53,26 +97,41 @@ class _ProductScreenState extends State<ProductScreen> {
     });
   }
 
+  @override
+  void dispose() {
+    scrollController.dispose();
+    super.dispose();
+  }
+
   Future<void> checkInternetAndLoad() async {
-    var connectivityResult =
-        await Connectivity().checkConnectivity();
-
-    if (connectivityResult == ConnectivityResult.none) {
-      setState(() {
-        hasInternet = false;
-        isFirstLoading = false;
-      });
-      return;
-    }
-
     try {
-      final result = await InternetAddress.lookup('google.com');
-      if (result.isNotEmpty &&
-          result[0].rawAddress.isNotEmpty) {
-        hasInternet = true;
-        await getProducts();
+      var connectivityResult =
+          await Connectivity().checkConnectivity();
+
+      if (connectivityResult == ConnectivityResult.none) {
+        setState(() {
+          hasInternet = false;
+          isFirstLoading = false;
+        });
+        return;
       }
-    } catch (_) {
+
+      try {
+        final result = await InternetAddress.lookup('google.com');
+        if (result.isNotEmpty && result[0].rawAddress.isNotEmpty) {
+          hasInternet = true;
+          await getProducts();
+        } else {
+          throw Exception('No internet');
+        }
+      } catch (_) {
+        setState(() {
+          hasInternet = false;
+          isFirstLoading = false;
+        });
+      }
+    } catch (e) {
+      print('Internet check error: $e');
       setState(() {
         hasInternet = false;
         isFirstLoading = false;
@@ -81,17 +140,28 @@ class _ProductScreenState extends State<ProductScreen> {
   }
 
   Future getProducts() async {
-    var response =
-        await http.get(Uri.parse("https://fakestoreapi.com/products"));
+    try {
+      var response = await http.get(
+        Uri.parse("https://fakestoreapi.com/products"),
+      ).timeout(Duration(seconds: 10));
 
-    if (response.statusCode == 200) {
-      products = jsonDecode(response.body);
-      loadMore();
+      if (response.statusCode == 200) {
+        products = jsonDecode(response.body);
+        loadMore();
+      } else {
+        throw Exception('Failed to load products');
+      }
+    } catch (e) {
+      print('Error loading products: $e');
+      // Show error in UI
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load products. Please try again.')),
+      );
+    } finally {
+      setState(() {
+        isFirstLoading = false;
+      });
     }
-
-    setState(() {
-      isFirstLoading = false;
-    });
   }
 
   void loadMore() {
@@ -113,7 +183,9 @@ class _ProductScreenState extends State<ProductScreen> {
     }
 
     isLoading = false;
-    setState(() {});
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   void searchProduct(String text) {
@@ -127,7 +199,9 @@ class _ProductScreenState extends State<ProductScreen> {
 
     visibleProducts = filtered.take(perPage).toList();
 
-    setState(() {});
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   void filterPrice() {
@@ -139,36 +213,46 @@ class _ProductScreenState extends State<ProductScreen> {
 
     visibleProducts = filtered.take(perPage).toList();
 
-    setState(() {});
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   void toggleFavorite(int id) async {
-    if (favoriteIds.contains(id)) {
-      favoriteIds.remove(id);
-    } else {
-      favoriteIds.add(id);
+    try {
+      if (favoriteIds.contains(id)) {
+        favoriteIds.remove(id);
+      } else {
+        favoriteIds.add(id);
+      }
+
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(
+        "fav",
+        favoriteIds.map((e) => e.toString()).toList(),
+      );
+
+      if (mounted) {
+        setState(() {});
+      }
+    } catch (e) {
+      print('Error saving favorites: $e');
     }
-
-    SharedPreferences prefs =
-        await SharedPreferences.getInstance();
-
-    prefs.setStringList(
-      "fav",
-      favoriteIds.map((e) => e.toString()).toList(),
-    );
-
-    setState(() {});
   }
 
   Future loadFavorites() async {
-    SharedPreferences prefs =
-        await SharedPreferences.getInstance();
+    try {
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      List<String>? saved = prefs.getStringList("fav");
 
-    List<String>? saved = prefs.getStringList("fav");
-
-    if (saved != null) {
-      favoriteIds = saved.map((e) => int.parse(e)).toList();
-      setState(() {});
+      if (saved != null) {
+        favoriteIds = saved.map((e) => int.parse(e)).toList();
+        if (mounted) {
+          setState(() {});
+        }
+      }
+    } catch (e) {
+      print('Error loading favorites: $e');
     }
   }
 
@@ -176,7 +260,16 @@ class _ProductScreenState extends State<ProductScreen> {
   Widget build(BuildContext context) {
     if (isFirstLoading) {
       return Scaffold(
-        body: Center(child: CircularProgressIndicator()),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 20),
+              Text('Loading products...'),
+            ],
+          ),
+        ),
       );
     }
 
@@ -186,10 +279,12 @@ class _ProductScreenState extends State<ProductScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Lottie.asset(
-                'assets/animations/no_internet.json',
-                height: 200,
-              ),
+              // Temporarily comment out Lottie until you add the asset
+              // Lottie.asset(
+              //   'assets/animations/no_internet.json',
+              //   height: 200,
+              // ),
+              Icon(Icons.wifi_off, size: 100, color: Colors.grey),
               SizedBox(height: 20),
               Text(
                 "You are offline",
@@ -204,6 +299,7 @@ class _ProductScreenState extends State<ProductScreen> {
                 onPressed: () {
                   setState(() {
                     isFirstLoading = true;
+                    hasInternet = true;
                   });
                   checkInternetAndLoad();
                 },
@@ -238,88 +334,100 @@ class _ProductScreenState extends State<ProductScreen> {
             ),
           ),
           Expanded(
-            child: GridView.builder(
-              controller: scrollController,
-              padding: EdgeInsets.all(8),
-              gridDelegate:
-                  SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 8,
-                mainAxisSpacing: 8,
-                childAspectRatio: 0.7,
-              ),
-              itemCount: visibleProducts.length + 1,
-              itemBuilder: (context, index) {
-                if (index == visibleProducts.length) {
-                  return isLoading
-                      ? Center(
-                          child: CircularProgressIndicator(),
-                        )
-                      : SizedBox();
-                }
-
-                var item = visibleProducts[index];
-
-                return Card(
-                  elevation: 3,
-                  child: Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: CachedNetworkImage(
-                          imageUrl: item["image"],
-                          fit: BoxFit.contain,
-                          placeholder: (context, url) =>
-                              Center(child: CircularProgressIndicator()),
-                          errorWidget: (context, url, error) =>
-                              Icon(Icons.error),
-                        ),
-                      ),
-                      Padding(
-                        padding: EdgeInsets.all(6),
-                        child: Text(
-                          item["title"],
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                      Padding(
-                        padding:
-                            EdgeInsets.symmetric(horizontal: 6),
-                        child: Text(
-                          "₹ ${item["price"]}",
-                          style: TextStyle(
-                              color: Colors.green),
-                        ),
-                      ),
-                      Padding(
-                        padding:
-                            EdgeInsets.symmetric(horizontal: 6),
-                        child: Text(
-                            "⭐ ${item["rating"]["rate"]}"),
-                      ),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: IconButton(
-                          icon: Icon(
-                            favoriteIds.contains(
-                                    item["id"])
-                                ? Icons.favorite
-                                : Icons.favorite_border,
-                            color: Colors.red,
+            child: products.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.shopping_bag, size: 100, color: Colors.grey),
+                        SizedBox(height: 20),
+                        Text('No products found'),
+                      ],
+                    ),
+                  )
+                : GridView.builder(
+                    controller: scrollController,
+                    padding: EdgeInsets.all(8),
+                    gridDelegate:
+                        SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 8,
+                      mainAxisSpacing: 8,
+                      childAspectRatio: 0.7,
+                    ),
+                    itemCount: visibleProducts.length + (isLoading ? 1 : 0),
+                    itemBuilder: (context, index) {
+                      if (index == visibleProducts.length) {
+                        return Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(8),
+                            child: CircularProgressIndicator(),
                           ),
-                          onPressed: () =>
-                              toggleFavorite(item["id"]),
+                        );
+                      }
+
+                      var item = visibleProducts[index];
+
+                      return Card(
+                        elevation: 3,
+                        child: Column(
+                          crossAxisAlignment:
+                              CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: CachedNetworkImage(
+                                imageUrl: item["image"] ?? '',
+                                fit: BoxFit.contain,
+                                placeholder: (context, url) =>
+                                    Center(child: CircularProgressIndicator()),
+                                errorWidget: (context, url, error) =>
+                                    Icon(Icons.error),
+                              ),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.all(6),
+                              child: Text(
+                                item["title"] ?? 'No title',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                            Padding(
+                              padding:
+                                  EdgeInsets.symmetric(horizontal: 6),
+                              child: Text(
+                                "₹ ${item["price"]?.toString() ?? '0'}",
+                                style: TextStyle(
+                                    color: Colors.green),
+                              ),
+                            ),
+                            Padding(
+                              padding:
+                                  EdgeInsets.symmetric(horizontal: 6),
+                              child: Text(
+                                  "⭐ ${item["rating"]?["rate"]?.toString() ?? '0'}"),
+                            ),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: IconButton(
+                                icon: Icon(
+                                  favoriteIds.contains(
+                                          item["id"])
+                                      ? Icons.favorite
+                                      : Icons.favorite_border,
+                                  color: Colors.red,
+                                ),
+                                onPressed: () =>
+                                    toggleFavorite(item["id"]),
+                              ),
+                            )
+                          ],
                         ),
-                      )
-                    ],
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
         ],
       ),
